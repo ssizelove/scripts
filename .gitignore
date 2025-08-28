@@ -1,0 +1,28 @@
+# OS / editor junk
+.DS_Store
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+
+# Logs
+*.log
+
+# Python cache if you drop in python helpers
+__pycache__/
+*.pyc
+
+# Ruby junk
+*.gem
+*.rbc
+
+# Shell history (if you ever save one here by accident)
+*.history
+
+# Node/npm (if you experiment here)
+node_modules/
+npm-debug.log*
+
+# Misc
+.env
