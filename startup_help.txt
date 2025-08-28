@@ -1,0 +1,4 @@
+To undo/remove:
+launchctl unload ~/Library/LaunchAgents/com.sizelove.keepawake.plist
+rm ~/Library/LaunchAgents/com.sizelove.keepawake.plist
+rm ~/.scripts/keepawake.sh

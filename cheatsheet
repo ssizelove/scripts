@@ -1,0 +1,36 @@
+# create new app (ios + android ready)
+flutter-new myapp --org com.sizelove --platforms ios,android
+
+cd myapp
+
+# run on simulator
+open -a Simulator
+flutter run -d "iPhone 16 Plus"
+
+# run on web
+flutter run -d chrome
+
+# list all devices (sim, chrome, android, etc.)
+flutter devices
+
+# clean & rebuild (if something feels off)
+flutter clean
+(cd ios && pod install)
+
+######
+mobile_align.sh
+######
+Notes / gotchas it covers
+	•	iOS
+	•	Removes ios/.gitignore (the old template that hid Generated.xcconfig)
+	•	Rewrites ios/Flutter/*.xcconfig with the canonical 2-line includes
+	•	Sets Runner → Base Configuration to those xcconfigs
+	•	Creates a minimal Podfile if missing
+	•	Runs pod install
+	•	Force-adds Podfile + xcconfigs so future clones don’t break
+	•	Android
+	•	Ensures JDK 17 (prints Java version, tries to set JAVA_HOME on macOS)
+	•	Ensures Android SDK path and writes android/local.properties
+	•	Installs core SDK components with sdkmanager (if present)
+	•	Precaches Android artifacts for the active Flutter version
+	•	Keeps local.properties ignored in Git

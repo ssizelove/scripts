@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP="${1:-}"
+if [[ -z "$APP" ]]; then
+  echo "usage: $(basename "$0") <app_name> [--org com.example] [--platforms ios,android] [extra flutter create flags]"
+  exit 1
+fi
+shift || true
+
+ORG="--org com.example"
+PLAT="--platforms ios,android"
+EXTRA=()
+
+while (($#)); do
+  case "$1" in
+    --org)       ORG="--org ${2:-}"; shift 2;;
+    --platforms) PLAT="--platforms ${2:-}"; shift 2;;
+    *)           EXTRA+=("$1"); shift;;
+  esac
+done
+
+echo "🛠  flutter create $APP"
+flutter create -i swift -a kotlin $ORG $PLAT "${EXTRA[@]+"${EXTRA[@]}"}" "$APP"
+
+cd "$APP"
+echo "📦 flutter pub get"
+flutter pub get
+
+if [[ -d ios ]]; then
+  echo "📄 ensuring iOS scaffolding"
+  flutter create --platforms=ios .  # idempotent; lays down ios/Flutter/* and usually Podfile
+
+  # If Podfile still missing, create a minimal one
+  if [[ ! -f ios/Podfile ]]; then
+    echo "📄 writing minimal Podfile"
+    cat > ios/Podfile <<'PODFILE'
+platform :ios, '15.0'
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "Missing: #{generated_xcode_build_settings_path}. Run 'flutter pub get' first."
+  end
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}"
+end
+
+require File.expand_path(File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper'), __FILE__)
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks! :linkage => :static
+  use_modular_headers!
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |t|
+    t.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+    end
+  end
+end
+PODFILE
+  fi
+
+  # Canonical xcconfigs (Pods include first, then Generated)
+  mkdir -p ios/Flutter
+  printf '#include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"\n#include? "Generated.xcconfig"\n'   > ios/Flutter/Debug.xcconfig
+  printf '#include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"\n#include? "Generated.xcconfig"\n' > ios/Flutter/Profile.xcconfig
+  printf '#include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"\n#include? "Generated.xcconfig"\n' > ios/Flutter/Release.xcconfig
+
+  # Set Base Configs
+  if [[ -x "$HOME/scripts/fix_ios_pods.rb" ]]; then
+    echo "🧩 fixing iOS Base Configs"
+    ruby "$HOME/scripts/fix_ios_pods.rb"
+  fi
+
+  echo "📚 pod install"
+  (cd ios && pod install)
+
+  # Optional verification
+  if [[ -x "$HOME/scripts/verify_ios_pods.rb" ]]; then
+    echo "🔎 verify"
+    ruby "$HOME/scripts/verify_ios_pods.rb"
+  fi
+fi
+
+echo "🎉 done."
+echo "next:"
+echo "  cd $APP"
+echo "  open -a Simulator && flutter run -d \"iPhone 16 Plus\""
+echo "  flutter run -d chrome"

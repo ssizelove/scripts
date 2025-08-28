@@ -1,0 +1,6 @@
+# new project, fully wired:
+flutter-new myapp --org com.sizelove --platforms ios,android
+
+# or run the fixer anytime inside an existing project:
+ruby ~/scripts/fix_ios_pods.rb
+cd ios && pod install
