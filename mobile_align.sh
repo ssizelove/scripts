@@ -1,215 +1,154 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------
-# Config / helpers
-# ------------------------------
-FLUTTER="flutter"; [[ -d ".fvm/flutter_sdk" ]] && FLUTTER="fvm flutter"
-say()  { printf "\033[1;32m%s\033[0m\n" "$*"; }
-warn() { printf "\033[1;33m%s\033[0m\n" "$*"; }
-die()  { printf "\033[1;31m%s\033[0m\n" "$*"; exit 1; }
+# mobile_align.sh — unify Android + iOS IDs for a Flutter app (Groovy or Kotlin DSL)
+# Usage:
+#   ~/scripts/mobile_align.sh /path/to/flutter_project [com.sizelove.adhdapp]
 
-DO_IOS=true
-DO_ANDROID=true
-while (($#)); do
-  case "$1" in
-    --ios) DO_IOS=true; DO_ANDROID=false;;
-    --android) DO_ANDROID=true; DO_IOS=false;;
-    --both) DO_IOS=true; DO_ANDROID=true;;
-    *) warn "Unknown flag $1 ignored";;
-  esac
-  shift || true
+APP_DIR="${1:-$PWD}"
+NEW_ID="${2:-com.sizelove.adhdapp}"
+
+cd "$APP_DIR" || { echo "Project not found: $APP_DIR"; exit 1; }
+[[ -f pubspec.yaml ]] || { echo "Run from your Flutter project root (pubspec.yaml missing)"; exit 1; }
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+  git add -A || true
+  git commit -m "checkpoint before mobile_align ($STAMP)" || true
+fi
+
+echo "────────────────────────────────────────────────────────"
+echo "🔧 ANDROID: setting package/applicationId/namespace = ${NEW_ID}"
+echo "────────────────────────────────────────────────────────"
+ANDROID_APP="android/app"
+GRADLE_GROOVY="$ANDROID_APP/build.gradle"
+GRADLE_KTS="$ANDROID_APP/build.gradle.kts"
+
+if [[ -f "$GRADLE_KTS" ]]; then
+  GRADLE_FILE="$GRADLE_KTS"
+  IS_KTS=1
+elif [[ -f "$GRADLE_GROOVY" ]]; then
+  GRADLE_FILE="$GRADLE_GROOVY"
+  IS_KTS=0
+else
+  echo "Missing $GRADLE_GROOVY and $GRADLE_KTS"
+  exit 1
+fi
+
+# 1) applicationId / namespace in build.gradle(.kts)
+if [[ "$IS_KTS" -eq 1 ]]; then
+  # Kotlin DSL examples:
+  # defaultConfig { applicationId = "com.example.app" }
+  # android { namespace = "com.example.app" }
+  if grep -qE 'applicationId\s*=' "$GRADLE_FILE"; then
+    sed -i '' -E "s#applicationId\s*=\s*\"[^\"]+\"#applicationId = \"${NEW_ID}\"#g" "$GRADLE_FILE"
+  else
+    # Insert inside defaultConfig { ... }
+    sed -i '' -E "s/(defaultConfig\s*\\{)/\\1\n        applicationId = \"${NEW_ID}\"/g" "$GRADLE_FILE"
+  fi
+  if grep -qE 'namespace\s*=' "$GRADLE_FILE"; then
+    sed -i '' -E "s#namespace\s*=\s*\"[^\"]+\"#namespace = \"${NEW_ID}\"#g" "$GRADLE_FILE"
+  else
+    # Insert inside android { ... }
+    sed -i '' -E "s/(android\s*\\{)/\\1\n    namespace = \"${NEW_ID}\"/g" "$GRADLE_FILE"
+  fi
+else
+  # Groovy DSL
+  if grep -q 'applicationId "' "$GRADLE_FILE"; then
+    sed -i '' -E "s/applicationId \"[^\"]+\"/applicationId \"${NEW_ID//\//\\/}\"/" "$GRADLE_FILE"
+  else
+    sed -i '' -E "s/(defaultConfig\s*\{)/\\1\n        applicationId \"${NEW_ID//\//\\/}\"/" "$GRADLE_FILE"
+  fi
+  if grep -q 'namespace "' "$GRADLE_FILE"; then
+    sed -i '' -E "s/namespace \"[^\"]+\"/namespace \"${NEW_ID//\//\\/}\"/" "$GRADLE_FILE"
+  else
+    sed -i '' -E "s/(android\s*\{)/\\1\n    namespace \"${NEW_ID//\//\\/}\"/" "$GRADLE_FILE"
+  fi
+fi
+
+# 2) Move Kotlin source tree to match package
+SRC_ROOT="$ANDROID_APP/src/main/kotlin"
+if [[ -d "$SRC_ROOT" ]]; then
+  MAIN_KT="$(find "$SRC_ROOT" -type f -name "MainActivity.kt" -maxdepth 10 2>/dev/null | head -n1 || true)"
+  if [[ -n "${MAIN_KT:-}" ]]; then
+    CUR_DIR="$(dirname "$MAIN_KT")"
+    NEW_DIR="$SRC_ROOT/$(echo "$NEW_ID" | tr '.' '/')"
+    mkdir -p "$NEW_DIR"
+    # Move contents if not already there
+    if [[ "$CUR_DIR" != "$NEW_DIR" ]]; then
+      mv "$CUR_DIR"/* "$NEW_DIR"/ 2>/dev/null || true
+      # Update package declaration
+      sed -i '' -E "s/^package .*/package ${NEW_ID}/" "$NEW_DIR/MainActivity.kt"
+      # Clean empty old dirs
+      find "$SRC_ROOT" -type d -empty -delete || true
+      echo "✅ MainActivity moved to $NEW_DIR"
+    else
+      # Still update package line just in case
+      sed -i '' -E "s/^package .*/package ${NEW_ID}/" "$NEW_DIR/MainActivity.kt"
+      echo "ℹ️  MainActivity already in $NEW_DIR"
+    fi
+  else
+    echo "ℹ️  MainActivity.kt not found under $SRC_ROOT (OK for older templates)"
+  fi
+else
+  echo "ℹ️  $SRC_ROOT not present (Java template or different structure)"
+fi
+
+# 3) Update manifest package attributes (main/debug/profile) if present
+for MF in "$ANDROID_APP/src/main/AndroidManifest.xml" \
+          "$ANDROID_APP/src/debug/AndroidManifest.xml" \
+          "$ANDROID_APP/src/profile/AndroidManifest.xml"; do
+  [[ -f "$MF" ]] || continue
+  if grep -q 'package=' "$MF"; then
+    sed -i '' -E "s/package=\"[^\"]+\"/package=\"${NEW_ID}\"/" "$MF"
+  fi
 done
 
-[[ -f pubspec.yaml ]] || die "Run from project root (pubspec.yaml missing)."
-say "▶ Using: $($FLUTTER --version | head -n1)"
+echo "────────────────────────────────────────────────────────"
+echo "🍎  iOS: setting PRODUCT_BUNDLE_IDENTIFIER = ${NEW_ID}"
+echo "────────────────────────────────────────────────────────"
+IOS_PROJ="ios/Runner.xcodeproj"
+[[ -d "$IOS_PROJ" ]] || { echo "Missing $IOS_PROJ"; exit 1; }
 
-IN_GIT=false; git rev-parse --is-inside-work-tree >/dev/null 2>&1 && IN_GIT=true
-
-# ------------------------------
-# iOS alignment
-# ------------------------------
-align_ios() {
-  say "=== iOS: align ==="
-
-  # Nuke nested ios/.gitignore (overrides root rules)
-  if [[ -f ios/.gitignore ]]; then
-    warn "Removing ios/.gitignore (it can ignore xcconfigs)"
-    rm -f ios/.gitignore
-    $IN_GIT && git rm --cached -q ios/.gitignore || true
-  fi
-
-  # Scaffolding + artifacts
-  say "▶ flutter pub get"
-  $FLUTTER pub get
-  say "▶ flutter create --platforms=ios ."
-  $FLUTTER create --platforms=ios .
-  say "▶ flutter precache --ios"
-  $FLUTTER precache --ios
-
-  [[ -f ios/Flutter/Generated.xcconfig ]] || die "Generated.xcconfig missing."
-
-  # Podfile (create minimal if missing)
-  if [[ ! -f ios/Podfile ]]; then
-    warn "Podfile missing — writing minimal Podfile"
-    cat > ios/Podfile <<'PODFILE'
-platform :ios, '15.0'
-ENV['COCOAPODS_DISABLE_STATS'] = 'true'
-project 'Runner', { 'Debug' => :debug, 'Profile' => :release, 'Release' => :release }
-
-def flutter_root
-  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
-  unless File.exist?(generated_xcode_build_settings_path)
-    raise "Missing: #{generated_xcode_build_settings_path}. Run 'flutter pub get' first."
-  end
-  File.foreach(generated_xcode_build_settings_path) do |line|
-    matches = line.match(/FLUTTER_ROOT\=(.*)/)
-    return matches[1].strip if matches
-  end
-  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}"
-end
-
-require File.expand_path(File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper'), __FILE__)
-flutter_ios_podfile_setup
-
-target 'Runner' do
-  use_frameworks! :linkage => :static
-  use_modular_headers!
-  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
-end
-
-post_install do |installer|
-  installer.pods_project.targets.each do |t|
-    t.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-    end
-  end
-end
-PODFILE
-  fi
-
-  # Canonical xcconfigs (Pods include first, then Generated)
-  say "▶ write ios/Flutter/*.xcconfig"
-  mkdir -p ios/Flutter
-  printf '#include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"\n#include? "Generated.xcconfig"\n'   > ios/Flutter/Debug.xcconfig
-  printf '#include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"\n#include? "Generated.xcconfig"\n' > ios/Flutter/Profile.xcconfig
-  printf '#include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"\n#include? "Generated.xcconfig"\n' > ios/Flutter/Release.xcconfig
-
-  # Set Base Configs on Runner
-  say "▶ set Base Configurations on Runner target"
-  if ! ruby -e "require 'xcodeproj'" >/dev/null 2>&1; then
-    warn "Installing 'xcodeproj' gem (one-time)…"
-    gem install --no-document xcodeproj >/dev/null
-  fi
-  ruby <<'RUBY'
+# Inline Ruby to update all Runner configs (note the '-' before args)
+/usr/bin/env ruby - "$IOS_PROJ" "$NEW_ID" <<'RUBY'
 require 'xcodeproj'
-p = Xcodeproj::Project.open('ios/Runner.xcodeproj')
-t = p.targets.find { |x| x.name == 'Runner' } or abort("Runner target not found")
-def ensure_ref(p, rel) p.files.find { |f| f.path == rel } || p.new_file(rel) end
-{'Debug'=>'Flutter/Debug.xcconfig','Profile'=>'Flutter/Profile.xcconfig','Release'=>'Flutter/Release.xcconfig'}.each do |name,rel|
-  cfg = t.build_configurations.find{|c|c.name==name} or abort("Config #{name} missing")
-  cfg.base_configuration_reference = ensure_ref(p, rel)
+proj_path = ARGV[0]
+bundle_id = ARGV[1]
+p = Xcodeproj::Project.open(proj_path)
+t = p.targets.find { |x| x.name == 'Runner' } or abort "Runner target not found"
+t.build_configurations.each do |cfg|
+  cfg.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = bundle_id
 end
 p.save
+puts "✅ Set PRODUCT_BUNDLE_IDENTIFIER=#{bundle_id} for Runner (all configs)"
 RUBY
 
-  # Force-track essentials
-  if $IN_GIT; then
-    say "▶ ensure Podfile + xcconfigs are tracked in Git"
-    git add -f ios/Podfile ios/Flutter/Generated.xcconfig ios/Flutter/Debug.xcconfig ios/Flutter/Profile.xcconfig ios/Flutter/Release.xcconfig 2>/dev/null || true
-  fi
-
-  # Pods
-  say "▶ pod install"
+# Ensure Info.plist uses $(PRODUCT_BUNDLE_IDENTIFIER)
+PLIST="ios/Runner/Info.plist"
+/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$PLIST" >/dev/null 2>&1 || true
+if /usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$PLIST" 2>/dev/null | grep -vq '\$\(' ; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier \$(PRODUCT_BUNDLE_IDENTIFIER)" "$PLIST" || true
+fi
+echo "✅ Info.plist uses \$(PRODUCT_BUNDLE_IDENTIFIER)"
+# 4) Align Pods
+if [[ -x "$HOME/scripts/ios_align.sh" ]]; then
+  echo "📚 Running ios_align.sh"
+  "$HOME/scripts/ios_align.sh"
+else
+  echo "📚 Running 'pod install' in ios/"
   (cd ios && pod install)
-  say "✓ iOS aligned"
-}
+fi
 
-# ------------------------------
-# Android alignment
-# ------------------------------
-align_android() {
-  say "=== Android: align ==="
+if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+  git add -A || true
+  git commit -m "mobile_align: set IDs to ${NEW_ID}" || true
+fi
 
-  # Precache Android artifacts
-  say "▶ flutter precache --android"
-  $FLUTTER precache --android
-
-  # Ensure Android scaffold
-  say "▶ flutter create --platforms=android ."
-  $FLUTTER create --platforms=android .
-
-  # Java 17 check
-  if command -v java >/dev/null 2>&1; then
-    JVER=$(java -version 2>&1 | head -n1)
-    echo "Java: $JVER"
-  else
-    warn "Java not found. Install Temurin 17 (JDK 17) and set JAVA_HOME."
-  fi
-
-  # Try to auto-configure JAVA_HOME for macOS Temurin 17
-  if [[ -z "${JAVA_HOME:-}" ]]; then
-    if /usr/libexec/java_home -v 17 >/dev/null 2>&1; then
-      export JAVA_HOME="$(/usr/libexec/java_home -v 17)"
-      warn "Set JAVA_HOME to $JAVA_HOME for this shell. Consider adding to ~/.zprofile."
-    fi
-  fi
-
-  # Android SDK path & local.properties
-  ANDROID_SDK_DEFAULT="$HOME/Library/Android/sdk"
-  if [[ -z "${ANDROID_SDK_ROOT:-}" ]]; then
-    export ANDROID_SDK_ROOT="$ANDROID_SDK_DEFAULT"
-  fi
-  if [[ ! -d "$ANDROID_SDK_ROOT" ]]; then
-    warn "Android SDK not found at $ANDROID_SDK_ROOT. Install Android Studio to get it."
-  fi
-
-  mkdir -p android
-  if [[ ! -f android/local.properties ]]; then
-    say "▶ writing android/local.properties"
-    cat > android/local.properties <<EOF
-sdk.dir=${ANDROID_SDK_ROOT}
-EOF
-  fi
-
-  # Core SDK components (best-effort)
-  if command -v sdkmanager >/dev/null 2>&1; then
-    say "▶ sdkmanager essentials (licenses, platform-tools, latest platform/build-tools)"
-    yes | sdkmanager --licenses >/dev/null || true
-    sdkmanager "platform-tools" >/dev/null || true
-    sdkmanager "platforms;android-35" >/dev/null || true
-    sdkmanager "build-tools;35.0.0" >/dev/null || true
-  else
-    warn "sdkmanager not on PATH. Open Android Studio → SDK Manager to install platform-tools, Android 35, Build-tools 35."
-  fi
-
-  # Gradle sanity (print wrapper version)
-  if [[ -f android/gradle/wrapper/gradle-wrapper.properties ]]; then
-    echo "Gradle wrapper:"
-    grep -E '^distributionUrl=' android/gradle/wrapper/gradle-wrapper.properties || true
-  fi
-
-  # Force-track nothing Android-specific (local.properties should stay untracked)
-  if $IN_GIT; then
-    # Ensure .gitignore ignores local.properties; add if missing
-    if ! grep -q '^android/local.properties$' .gitignore 2>/dev/null; then
-      echo "android/local.properties" >> .gitignore
-      git add .gitignore
-      warn "Added android/local.properties to .gitignore"
-    fi
-  fi
-
-  say "✓ Android aligned (Java 17 + SDK path + essentials)"
-}
-
-# ------------------------------
-# Run
-# ------------------------------
-$DO_IOS && align_ios
-$DO_ANDROID && align_android
-
-say "✅ Done. Next:"
-echo "   $FLUTTER clean"
-echo "   open -a Simulator && $FLUTTER run -d \"iPhone 16 Plus\"   # iOS"
-echo "   $FLUTTER run -d chrome                                    # Web"
-echo "   adb devices && $FLUTTER run -d <deviceId>                  # Android device/emulator"
+echo "────────────────────────────────────────────────────────"
+echo "✅ Done. IDs set to: ${NEW_ID}"
+echo "Next:"
+echo "  1) flutterfire configure   # select the project + the iOS/Android apps using ${NEW_ID}"
+echo "  2) fvm flutter clean && fvm flutter pub get"
+echo "  3) fvm flutter run -d \"iPhone 16 Plus\""
+echo "────────────────────────────────────────────────────────"
