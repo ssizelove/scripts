@@ -1,16 +1,16 @@
 #!/usr/bin/env ruby
 require 'xcodeproj'
 
-proj_path = File.expand_path(ARGV[0] || 'ios/Runner.xcodeproj')
-bundle_id = ARGV[1] || 'com.sizelove.adhdapp'
-abort "Usage: ios_set_bundle_id.rb <path-to-Runner.xcodeproj> <bundleId>" unless File.exist?(proj_path)
+proj_path = File.expand_path(ARGV[0] || '')
+bundle_id = ARGV[1]
+
+if proj_path.empty? || bundle_id.nil? || bundle_id.strip.empty?
+  abort "usage: #{File.basename($0)} <path-to-Runner.xcodeproj> <bundleId>"
+end
+abort "not found: #{proj_path}" unless File.exist?(proj_path)
 
 p = Xcodeproj::Project.open(proj_path)
-target = p.targets.find { |t| t.name == 'Runner' } or abort "Runner target not found"
-
-target.build_configurations.each do |cfg|
-  cfg.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = bundle_id
-end
-
+t = p.targets.find { |x| x.name == 'Runner' } or abort "Runner target not found"
+t.build_configurations.each { |cfg| cfg.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = bundle_id }
 p.save
-puts "✅ Set PRODUCT_BUNDLE_IDENTIFIER=#{bundle_id} for target Runner (all configs)"
+puts "✅ Set PRODUCT_BUNDLE_IDENTIFIER=#{bundle_id} for Runner (all configs)"

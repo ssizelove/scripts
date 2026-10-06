@@ -1,37 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
-PKG="com.sizelove.adhdapp"
-APP_DIR="${1:-$PWD}"
+
+NEW_PKG="${1:-}"
+APP_DIR="${2:-$PWD}"
+
+if [[ -z "$NEW_PKG" ]]; then
+  echo "usage: $(basename "$0") <new.package.id> [project_dir]"
+  exit 1
+fi
 
 cd "$APP_DIR/android/app/src" || { echo "Run from project root"; exit 1; }
 
 # 1) Move Kotlin source tree to match package
-# Detect current path (e.g., main/kotlin/com/old/path)
-CUR_DIR=$(find main/kotlin -type f -name "MainActivity.kt" -exec dirname {} \;)
-if [[ -z "${CUR_DIR:-}" ]]; then
-  echo "MainActivity.kt not found"; exit 1
-fi
+CUR_DIR=$(find main/kotlin -type f -name "MainActivity.kt" -exec dirname {} \; | head -n1)
+[[ -n "${CUR_DIR:-}" ]] || { echo "MainActivity.kt not found"; exit 1; }
 
-# Build desired path
-NEW_DIR="main/kotlin/$(echo "$PKG" | tr '.' '/')"
+NEW_DIR="main/kotlin/$(echo "$NEW_PKG" | tr '.' '/')"
 mkdir -p "$NEW_DIR"
+mv "$CUR_DIR"/* "$NEW_DIR"/ 2>/dev/null || true
+sed -i '' -E "s/^package .*/package ${NEW_PKG}/" "$NEW_DIR/MainActivity.kt"
 
-# Move files
-mv "$CUR_DIR"/* "$NEW_DIR"/
-
-# Fix package line in Kotlin
-sed -i '' -E "s/^package .*/package ${PKG}/" "$NEW_DIR/MainActivity.kt"
-
-# 2) Update all AndroidManifests' package attributes (debug/profile/main)
+# 2) Update AndroidManifest package attrs
 for f in main/AndroidManifest.xml debug/AndroidManifest.xml profile/AndroidManifest.xml; do
   [[ -f "$f" ]] || continue
-  # Replace package="...":
   if grep -q 'package=' "$f"; then
-    sed -i '' -E "s/package=\"[^\"]+\"/package=\"${PKG}\"/" "$f"
-  else
-    # Some templates omit package= on manifest; skip
-    :
+    sed -i '' -E "s/package=\"[^\"]+\"/package=\"${NEW_PKG}\"/" "$f"
   fi
 done
 
-echo "✅ Android package set to ${PKG}"
+echo "✅ Android package set to ${NEW_PKG}"
